@@ -1,0 +1,19 @@
+{
+  "name": "song-project-d3",
+  "version": "1.0.0",
+  "description": "Interactive Visualization for analyzing song diffusion geographically",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "Diffusion",
+    "flow",
+    "visualization"
+  ],
+  "author": "Heungseok Park",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.14.1"
+  }
+}

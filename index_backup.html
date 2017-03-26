@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<style>
+
+    .body {
+        background-color: #111;
+    }
+
+    #countries {
+        background: #111;
+
+    }
+
+    .stroke {
+        fill: none;
+        stroke: #888;
+        stroke-width: 2px;
+    }
+
+    .fill {
+        fill: #fff;
+    }
+
+/*
+    .graticule {
+        fill: none;
+        stroke: #777;
+        stroke-width: .5px;
+        stroke-opacity: .5;
+    }
+*/
+
+    .arc {
+        fill: #898;
+        stroke: red;
+        stroke-width: 3px;
+        stroke-linecap: round;
+    }
+
+    .boundary {
+        fill: none;
+        stroke: #fff;
+        stroke-width: .5px;
+        stroke-linejoin: round;
+        stroke-linecap: round;
+    }
+    .country {
+        fill: #898;
+        stroke: #dfff6d;
+        background-color: #111;
+    }
+
+    .country.active {
+        /*fill: #555;*/
+        stroke: white;
+
+    }
+
+    #play, #clock {
+        position: relative;
+        top: 15px;
+    }
+    #play {
+        left: 15px;
+    }
+    #clock {
+        left: 65px;
+    }
+
+</style>
+<body>
+<svg width="100%" height="100%" fill="none" stroke="#000"></svg>
+<div id="wrapper">
+    <div id="map"></div>
+    <button id="play">play</button>
+    <span id="clock">year</span>
+</div>
+<!--<script src="//d3js.org/d3.v3.min.js"></script>-->
+<!--<script src="//d3js.org/d3.geo.projection.v0.min.js"></script>-->
+<!--<script src="//d3js.org/topojson.v1.min.js"></script>-->
+<script src="https://d3js.org/d3.v4.min.js"></script>
+<script src="https://d3js.org/d3-geo-projection.v1.min.js"></script>
+<script src="https://d3js.org/topojson.v2.min.js"></script>
+<script>
+    // Global variables
+    var width, height, path, graticule, svg,
+        attributeArray = [], currentAttribute = 0,
+        playing=false,
+        margin = 25;
+
+    var projection, scale, offset;
+
+    var countries, centroids, arcs;
+
+    var arc;
+
+    var nodeDataByCode = {}, links = [];
+
+    var useGreatCircles = false;
+
+    var active = d3.select(null);
+
+    function init() {
+        setMap();
+        animateMap();
+    }
+
+
+    function setMap() {
+        width = window.innerHeight - margin;
+        height = window.innerHeight - margin; // map width and height, matches
+
+        scale = 125;
+        offset = [width/2, height/2];
+
+
+        svg = d3.select("svg")   // append a svg to our html div(#map) to hold our map
+//        svg = d3.select("#map").append("svg")   // append a svg to our html div(#map) to hold our map
+            .attr("width", width)
+            .attr("height", height);
+
+        projection = d3.geoEquirectangular()
+                    .scale(scale)
+                    .translate(offset)
+                    .precision(1);
+
+        path = d3.geoPath() // create path generator function
+            .projection(projection); // add our defined projection to it
+
+
+        svg.append("defs").append("path")   // prepare some svg for outer container of svg elements
+            .datum({type: "Sphere"})
+            .attr("id", "sphere")
+            .attr("d", path);
+
+
+
+        countries = svg.append("g").attr("id", "countries");
+        centroids = svg.append("g").attr("id", "centroids");
+        arcs = svg.append("g").attr("id", "arcs");
+
+        svg.append("text")
+            .attr("id", "loading")
+            .attr("x", 5)
+            .attr("y", 17)
+            .attr("font-size", "9pt")
+            .attr("font-family", "arial")
+            .text("Loading...");
+
+
+        loadData(); // let's load our data next
+
+    }
+
+    function loadData() {
+
+        d3.queue()  // queue function loads all external data files asynchronously
+            .defer(d3.json,"./data/world-topo.json")        // our geometries
+            .defer(d3.csv, "./data/countriesRandom.csv")    // and associated data in csv file
+            .defer(d3.csv, "./data/refugee-nodes.csv")
+            .defer(d3.csv, "./data/refugee-flows.csv")
+            .await(processData);    // once all files are loaded, call the processData function passing
+                                    // the loaded objects as arguments
+
+    }
+
+    function processData(error, world, countryData, countryInfo, countryFlow) {
+        if(error) throw error
+        // function accepts any errors from the queue function as first argument, then
+        // each data object in the order of chained defer() methods above
+
+        // makes loading screen invisible
+        d3.select("#loading").attr("visibility", "hidden");
+
+        var countries = world.objects.countries.geometries; // store the path in variable for ease
+        console.log(countries);
+        for (var i in countries){   // for each geometry object
+            for(var j in countryData){  // for each row in the CSV file
+                if (countries[i].properties.id == countryData[j].id) {  // if they match
+                    for (var k in countryData[i]) {     // for each column in the row within the CSV
+                        if (k != 'name' && k != 'id'){  // let's not add the name or id as props since we already have them
+                            if (attributeArray.indexOf(k) == -1){
+                                attributeArray.push(k); // add new column headings to our array for later
+                            }
+                            countries[i].properties[k] = Number(countryData[j][k]);  // add each CSV column key/value to geometry object
+                        }
+                    }
+                    break;  // stop looking through the CSV since we made our match
+                }
+            }
+        }
+        d3.select("#clock").html(attributeArray[currentAttribute]); //  populate the clock initially with the current year
+        drawMap(world); // let's mug the map with our newly populated data object
+        drawNetwork(countryInfo, countryFlow);
+
+    }
+
+    function drawMap(world) {
+
+        console.log("start drawing Map");
+
+
+        // *********** Parsing the topoJson as json object **********
+        var worlds = topojson.feature(world, world.objects.countries);
+
+
+        // ********** Calculate the boundary of maps to fit the map with size of SVG **********
+
+        // using the path determine the bounds of the current map and use
+        // these to determine better values for the scales and translation
+        var bounds = path.bounds(worlds);
+        var hscale = scale*width / (bounds[1][0] - bounds[0][0]);
+        var vscale = scale*height / (bounds[1][1] - bounds[0][1]);
+        scale = (hscale < vscale) ? hscale : vscale;
+        offset = [width - (bounds[0][0] + bounds[1][0])/ 2,
+                    height - (bounds[0][1] + bounds[1][1]) / 2];
+
+        // new projection
+        projection = d3.geoPatterson()
+//            .center(d3.geoCentroid(worlds))
+            .scale(scale)
+            .translate(offset);
+        path = path.projection(projection);
+
+
+        // ********** Drawing map **********
+
+        countries.selectAll("path")   // select country objects
+            .data(worlds.features)    // bind data to these non-existent objects
+            .enter().append("path") // prepare data to be appended to paths
+            .attr("class", "country")   // give them a class for styling and access later
+            .attr("id", function (d) { return "code_" + d.properties.id; }, true)   // give each a unique id for access later
+            .attr("d", path) // create them using the svg path generator defined above
+            .on("mouseover", countryHovered);
+
+        //  Fill color of each countries according to the value
+        var dataRange = getDataRange(); // get the min/max values from the current year's range of data values
+        countries.selectAll("path")    // select all the countries
+            .attr('fill-opacity', function (d) {
+                return getColor(d.properties[attributeArray[currentAttribute]], dataRange); // give them an opacity value based
+            });
+
+        // Create Graticule
+        /*
+        graticule = d3.geoGraticule(); // create a graticule (which is the grid used in the geographic coordinate system
+        svg.append("path")  // use pathe generator to draw a graticule
+            .datum(graticule)
+            .attr("class", "graticule")
+            .attr("d", path);
+        */
+
+        console.log("end of drawing Map");
+
+    }
+
+    function drawNetwork(nodes, edges) {
+
+        console.log("start drawing network of country");
+
+        // ****************** NODE(centroid of each country) **********************
+        // Set node data by code(country's id)
+        nodes.forEach(function (node) {
+            node.coords = nodeCoords(node);
+            node.projection = node.coords ? projection(node.coords) : undefined;
+            nodeDataByCode[node.id] = node;
+        });
+
+        // append node(circle) to map
+        centroids.selectAll("circle")
+            .data(nodes.filter(function (node) { return node.projection ? true : false }))
+            .enter().append("circle")
+            .attr("cx", function(d) { return d.projection[0] })
+            .attr("cy", function(d) { return d.projection[1] })
+            .attr("r", function() { return Math.random()*20 })
+            .attr("fill", "#000")
+            .attr("opacity", 0.5);
+
+
+
+        var year = '2008'; // the last year of the flow data
+        var maxMagnitude = d3.max(edges, function(d) { return parseFloat(d[year])});
+        var magnitudeFormat = d3.format(",.0f");
+
+        var arcWidth = d3.scaleLinear().domain([1, maxMagnitude]).range([.1, 7]);
+//        var minColor = '#f0f0f0', maxColor = 'rgb(8, 48, 107)';
+        var minColor = '#f0f0f0', maxColor = '#dfff6d';
+        var arcColor = d3.scaleLog().domain([1, maxMagnitude]).range([minColor, maxColor]);
+        var arcOpacity = d3.scaleLog().domain([1, maxMagnitude]).range([0.3, 1]);
+
+
+        // ****************** Edge(connections between each country) **********************
+
+        // Set Edge(flow) data
+        edges.forEach(function (edge) {
+            var o = nodeDataByCode[edge.Origin], co = o.coords, po = o.projection;
+            var d = nodeDataByCode[edge.Dest], cd = d.coords, pd = d.projection;
+            var magnitude = parseFloat(edge[year]);
+            if(co && cd && !isNaN(magnitude)){
+                links.push({
+                    source: co, target: cd,
+                    magnitude: magnitude,
+                    origin: o, dest: d,
+                    originp: po, destp: pd
+                });
+            }
+
+        });
+
+        var strokeFun = function (d) { return arcColor(d.magnitude); };
+        var gradientNameFun = function (d) { return "grd"+d.origin.id + d.dest.id; };
+        var gradientRefNameFun = function (d) { return "url(#"+gradientNameFun(d) +")"; };
+
+        var defs = svg.append("svg:defs");
+
+
+        // see http://apike.ca/prog_svg_patterns.html
+        defs.append("marker")
+            .attr("id", "arrowHead")
+            .attr("viewBox", "0 0 10 10")
+            .attr("refX", 10)
+            .attr("refY", 5)
+            .attr("orient", "auto")
+            .attr("markerUnits", "userSpaceOnUse")
+            .attr("markerWidth", 4*2)
+            .attr("markerHeight", 3*2)
+            .append("polyline")
+            .attr("points", "0,0 10,5 0,10 1,5")
+            .attr("fill", maxColor);
+
+        var gradient = defs.selectAll("linearGradient")
+            .data(links)
+            .enter()
+            .append("svg:linearGradient")
+            .attr("id", gradientNameFun)
+            .attr("gradientUnits", "userSpaceOnUse")
+            .attr("x1", function (d) { return d.originp[0]; })
+            .attr("y1", function (d) { return d.originp[1]; })
+            .attr("x2", function (d) { return d.destp[0]; })
+            .attr("y2", function (d) { return d.destp[1]; });
+
+        gradient.append("svg:stop")
+            .attr("offset", "0%")
+            .attr("stop-color", minColor)
+            .attr("stop-opacity", .0)
+        gradient.append("svg:stop")
+            .attr("offset", "80%")
+            .attr("stop-color", strokeFun)
+        gradient.append("svg:stop")
+            .attr("offset", "100%")
+            .attr("stop-color", strokeFun)
+            .attr("stop-opacity", 1.0);
+
+        var arcNodes = arcs.selectAll("path")
+            .data(links)
+            .enter().append("path")
+            .attr("stroke", gradientRefNameFun)
+            .attr("fill", "none")
+            .attr("stroke-linecap", "round")
+            .attr("stroke-width", function(d) { return arcWidth(d.magnitude)+1; })
+            .attr("d", function (d) {
+                if(useGreatCircles)
+                    return splitPath(path(arc(d)));
+                else
+                    return path({
+                        type: "LineString",
+                        coordinates: [d.source, d.target]
+                    });
+            })
+            .sort(function (a, b) {
+                var a = a.magnitude, b = b.magnitude;
+                if(isNaN(a)) if (isNaN(b)) return 0;
+                else return -1;
+                if(isNaN(b)) return 1;
+
+                return d3.ascending(a,b);
+            });
+
+        arcNodes.on("mouseover", function (d) {
+            d3.select(this)
+                .attr("stroke", "red")
+                .attr("marker-end", "url(#arrowHead");
+        });
+        arcNodes.on("mouseout", function (d) {
+            d3.select(this)
+                .attr("marker-end", "none")
+                .attr("stroke", gradientRefNameFun);
+        });
+
+        arcNodes.append("svg:title")
+            .text(function (d) {
+                return d.origin.name +" -> "+ d.dest.name+ "\n" +
+                        "Refugees in " + year + ": " + magnitudeFormat(d.magnitude);
+            });
+
+        console.log("end of drawing network of country");
+
+    }
+
+    function splitPath(path) {
+        var avgd = 0, // average distance between points
+            i, d;
+        var c, pc, dx, dy;
+        var points = path.split("L");
+        if( points.length <2 ) return path;
+
+        var newpath = [points[0]];
+        var coords = points.map(function (d, i) {
+            return d.substr(i > 0 ? 0 : 1).split(",");  // remove M and split
+        });
+
+        // calculate avg dist between points
+        for(i=1; i< coords.length; i++){
+            pc = coords[i-1]; c = coords[i];
+            dx = c[0] - pc[0]; dy = c[1] - pc[1];
+            d = Math.sqrt(dx*dx + dy*dy);
+            c.push(d); // push dist as last element of c
+            avgd += d;
+        }
+        avgd /= coords.length -1;
+
+        // for points with long dist from previous use M instead of L
+        for(i=1; i<coords.length; i++){
+            c = coords[i];
+            newpath.push((c[2] > 5 * avgd ? "M" : "L") + points[i]);
+        }
+        return newpath.join("");
+
+    }
+
+
+    function nodeCoords(node) {
+        var lon = parseFloat(node.lon), lat = parseFloat(node.lat);
+        if(isNaN(lon) || isNaN(lat)) return null;
+        return [lon, lat];
+    }
+
+    function sequenceMap() {
+        var dataRange = getDataRange(); // get the min/max values from the current year's range of data values
+        d3.selectAll('.country').transition()   // select all the countries and prepare for a transition to new values
+            .duration(750)  // give it a smooth time period for the transition
+            .attr('fill-opacity', function (d) {
+                return getColor(d.properties[attributeArray[currentAttribute]], dataRange); // the end color value
+            })
+
+    }
+    
+    function getColor(valueIn, valuesIn) {
+        var color = d3.scaleLinear()   // create a linear scale
+            .domain([valuesIn[0], valuesIn[1]]) // input uses min and max values
+            .range([.3, 1]);    // output for opacity between .3 and 1 %
+
+        return color(valueIn);  // return that number to the caller
+    }
+    
+    function getDataRange() {
+        // function loops through all the data values from the current data attribute
+        // and returns the min and max values
+
+        var min = Infinity, max = -Infinity;
+        d3.selectAll(".country")
+            .each(function (d, i) {
+                var currentValue = d.properties[attributeArray[currentAttribute]];
+                if ( currentValue <= min && currentValue != -99 && currentValue != 'undefined'){
+                    min = currentValue;
+                }
+                if ( currentValue >= max && currentValue != -99 && currentValue != 'undefined'){
+                    max = currentValue;
+                }
+            });
+        return [min, max];
+//        return [max, min];
+    }
+
+    function animateMap() {
+
+        var timer; // create timer object
+        d3.select("#play")
+            .on('click', function () {
+                if(playing == false){
+                    timer = setInterval(function () {
+                        if(currentAttribute < attributeArray.length-1){
+                            currentAttribute +=1;   // increment the current attribute counter
+                        } else {
+                            currentAttribute = 0; // or reset it to zero
+                        }
+                        sequenceMap(); // update the representation of the map
+                        d3.select("#clock").html(attributeArray[currentAttribute]); // update the clock
+                    }, 2000);
+
+                    d3.select(this).html('stop');   // change the button label to stop
+                    playing = true; // change the status of the animation
+
+
+                } else {
+                    clearInterval(timer);   // stop the animation by clearing the interval
+                    d3.select(this).html('play');   // change the button label to play
+                    playing = false;    // change the status again
+
+                }
+            });
+    }
+
+    function countryHovered(d) {
+//        console.log(d);
+        if(active.node() === this) return countryReset( );
+        active.classed("active", false);
+        active = d3.select(this).classed("active", true);
+    }
+
+    function countryReset() {
+        active.classed("active", false);
+        active = d3.select(null);
+
+        countries.transition()
+            .duration(750)
+            .style("stroke-width", "1.5px")
+            .attr("transform", "");
+    }
+
+    window.onload = init(); // magic starts here
+
+
+</script>
